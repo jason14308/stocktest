@@ -34,13 +34,19 @@ def get_us_market():
     return "\n".join(report)
 
 def get_tw_market():
-    """取得台股大盤收盤指數與成交量"""
-    report = ["【台股盤後大盤】"]
-    url = "https://open.twse.com.tw/v1/exchangeReport/MI_INDEX"
+    """取得台股大盤收盤指數（使用 yfinance，連線穩定免維護 API 網址）"""
+    report = ["【台股大盤動態】"]
     try:
-        res = requests.get(url, timeout=10)
-        # 證交所 API 正常回應時處理數據
-        report.append("• 證交所盤後數據連線正常 (依最近交易日結算)")
+        tw_data = yf.download("^TWII", period="5d", progress=False)['Close']
+        series = tw_data.dropna()
+        if len(series) >= 2:
+            latest = series.iloc[-1]
+            prev = series.iloc[-2]
+            pct = ((latest - prev) / prev) * 100
+            sign = "+" if pct > 0 else ""
+            report.append(f"• 加權指數 (^TWII): {latest:.2f} ({sign}{pct:.2f}%)")
+        else:
+            report.append("• 台股大盤數據筆數不足")
     except Exception as e:
         report.append(f"• 台股數據讀取異常: {e}")
     return "\n".join(report)
@@ -56,7 +62,6 @@ def get_ptt_sentiment():
         titles = []
         for tag in soup.select("div.r-ent div.title a"):
             title_text = tag.text.strip()
-            # 過濾置底與非盤面閒聊
             if not title_text.startswith("[公告]"):
                 titles.append(title_text)
             if len(titles) >= 5:
@@ -70,12 +75,18 @@ def get_ptt_sentiment():
 # ----------------- 2. 通知推送模組 -----------------
 
 def send_line(message):
-    """透過 LINE Messaging API 發送推播"""
+    """透過 LINE Messaging API 發送推播（含詳細除錯日誌）"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     user_id = os.getenv("LINE_USER_ID")
+    
     if not token or not user_id:
-        print("未設定 LINE Token 或 User ID，跳過 LINE 推送")
+        print("❌ [LINE 錯誤] 未讀取到 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID，請檢查 GitHub Secrets！")
         return
+
+    # LINE 限制單則文字上限為 5000 字
+    if len(message) > 4000:
+        message = message[:4000] + "\n...(篇幅過長已截斷)"
+
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -85,8 +96,13 @@ def send_line(message):
         "to": user_id,
         "messages": [{"type": "text", "text": message}]
     }
-    res = requests.post(url, headers=headers, json=payload)
-    print(f"LINE 發送狀態: {res.status_code}")
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        print(f"📡 [LINE 回應碼]: {res.status_code}")
+        print(f"📡 [LINE 詳細訊息]: {res.text}")
+    except Exception as e:
+        print(f"❌ [LINE 連線異常]: {e}")
 
 def send_email(subject, text_content):
     """發送電子郵件通知"""
@@ -94,19 +110,22 @@ def send_email(subject, text_content):
     password = os.getenv("GMAIL_APP_PASSWORD")
     receiver = os.getenv("RECEIVER_EMAIL", sender)
     if not sender or not password:
-        print("未設定 Gmail 帳號或密碼，跳過 Email 發送")
+        print("⚠️ 未設定 Gmail 帳號或密碼，跳過 Email 發送")
         return
 
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = receiver
-    msg.attach(MIMEText(text_content, "plain", "utf-8"))
+    try:
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = sender
+        msg["To"] = receiver
+        msg.attach(MIMEText(text_content, "plain", "utf-8"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender, password)
-        server.sendmail(sender, receiver, msg.as_string())
-    print("Email 發送完成")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, receiver, msg.as_string())
+        print("📧 Email 發送完成")
+    except Exception as e:
+        print(f"❌ Email 發送異常: {e}")
 
 # ----------------- 3. 主程序 -----------------
 
@@ -119,9 +138,11 @@ def main():
     sentiment_data = get_ptt_sentiment()
 
     full_report = f"{title}\n\n{us_data}\n\n{tw_data}\n\n{sentiment_data}"
+    print("----- 報表內容預覽 -----")
     print(full_report)
+    print("------------------------")
 
-    # 發送通知
+    # 執行通知推送
     send_line(full_report)
     send_email(title, full_report)
 
