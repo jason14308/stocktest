@@ -10,6 +10,7 @@ import yfinance as yf
 import matplotlib
 matplotlib.use('Agg')  # 無介面雲端伺服器繪圖專用模式
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 
 # ----------------- 0. 字型與圖表全域設定 -----------------
 plt.rcParams['axes.unicode_minus'] = False
@@ -46,7 +47,6 @@ def get_us_and_macro_market():
                 pct = ((latest - prev) / prev) * 100
                 sign = "+" if pct > 0 else ""
                 
-                # 特殊單位呈現
                 if "殖利率" in name:
                     report.append(f"• {name}: {latest:.3f}% ({sign}{pct:.2f}%)")
                 else:
@@ -117,8 +117,6 @@ def get_focus_stocks():
         "聯發科": "2454.TW"
     }
     report = ["【核心焦點個股】"]
-    stock_data = {}
-    
     try:
         tickers = list(watch_list.values())
         data = yf.download(tickers, period="5d", progress=False)['Close']
@@ -128,13 +126,12 @@ def get_focus_stocks():
                 latest = series.iloc[-1]
                 prev = series.iloc[-2]
                 pct = ((latest - prev) / prev) * 100
-                stock_data[name] = pct
                 sign = "+" if pct > 0 else ""
                 report.append(f"• {name} ({ticker.split('.')[0]}): {latest:.2f} 元 ({sign}{pct:.2f}%)")
     except Exception as e:
         report.append(f"• 個股數據擷取異常: {e}")
         
-    return "\n".join(report), stock_data
+    return "\n".join(report)
 
 def get_market_news():
     """抓取 Yahoo 奇摩股市首頁即時焦點新聞"""
@@ -178,34 +175,60 @@ def get_ptt_sentiment():
         report.append(f"• PTT 輿情抓取失敗: {e}")
     return "\n".join(report)
 
-# ----------------- 2. 圖表產製模組 -----------------
+# ----------------- 2. K 線圖繪製模組 (mplfinance) -----------------
 
-def generate_stock_chart(stock_data, output_path="stock_chart.png"):
-    """產製焦點個股漲跌長條圖"""
-    if not stock_data:
+def generate_kline_chart(ticker="^TWII", output_path="stock_chart.png"):
+    """繪製近 30 日 K 線走勢圖（含 MA5、MA20 均線與成交量）"""
+    try:
+        df = yf.download(ticker, period="3mo", progress=False)
+        if df.empty or len(df) < 10:
+            print("⚠️ 取得之 K 線歷史數據不足")
+            return None
+
+        # 針對 yfinance 多重索引欄位防呆處理
+        if isinstance(df.columns, matplotlib.cbook.Bunch if hasattr(matplotlib, 'cbook') else object):
+            pass
+        if hasattr(df.columns, 'levels') and len(df.columns.levels) > 1:
+            df.columns = df.columns.get_level_values(0)
+
+        # 取最近 35 根 K 棒
+        df = df.tail(35)
+
+        # 設定符合台股習慣的配色（紅漲綠跌）
+        market_colors = mpf.make_marketcolors(
+            up='#eb4d4b',       # 陽線紅色
+            down='#2ecc71',     # 陰線綠色
+            edge='inherit',
+            wick='inherit',
+            volume='inherit'
+        )
+        custom_style = mpf.make_mpf_style(
+            base_mpf_style='nightclouds',
+            marketcolors=market_colors,
+            rc={
+                'font.family': ['Noto Sans CJK TC', 'Noto Sans TC', 'Microsoft JhengHei', 'sans-serif'],
+                'axes.unicode_minus': False
+            }
+        )
+
+        # 繪製 K 線、均線（5 日、20 日）與成交量
+        mpf.plot(
+            df,
+            type='candle',
+            mav=(5, 20),
+            volume=True,
+            style=custom_style,
+            title="\n台股加權指數 (^TWII) 近期日 K 線與成交量",
+            ylabel="指數點位",
+            ylabel_lower="成交量",
+            savefig=output_path,
+            figsize=(9, 5),
+            dpi=150
+        )
+        return output_path
+    except Exception as e:
+        print(f"❌ 繪製 K 線圖失敗: {e}")
         return None
-    
-    names = list(stock_data.keys())
-    values = list(stock_data.values())
-    colors = ['#eb4d4b' if v >= 0 else '#2ecc71' for v in values]  # 台股紅漲綠跌
-
-    plt.figure(figsize=(6, 3.5), dpi=150)
-    bars = plt.bar(names, values, color=colors, width=0.45)
-    plt.axhline(0, color='gray', linewidth=0.8, linestyle='--')
-    plt.ylabel("漲跌幅 (%)", fontsize=10)
-    plt.title("焦點個股日漲跌統計", fontsize=12)
-
-    for bar in bars:
-        yval = bar.get_height()
-        sign = "+" if yval > 0 else ""
-        va_setting = 'bottom' if yval >= 0 else 'top'
-        plt.text(bar.get_x() + bar.get_width() / 2.0, yval, f"{sign}{yval:.2f}%", 
-                 ha='center', va=va_setting, fontsize=9)
-
-    plt.tight_layout()
-    plt.savefig(output_path)
-    plt.close()
-    return output_path
 
 # ----------------- 3. 通知推播模組 -----------------
 
@@ -255,7 +278,7 @@ def send_line(message):
         print(f"❌ [LINE 連線異常]: {e}")
 
 def send_email_with_image(subject, text_content, image_path):
-    """發送內嵌圖表的 HTML 電子郵件"""
+    """發送內嵌 K 線圖表的 HTML 電子郵件"""
     sender = os.getenv("GMAIL_USER")
     password = os.getenv("GMAIL_APP_PASSWORD")
     receiver = os.getenv("RECEIVER_EMAIL", sender)
@@ -276,8 +299,8 @@ def send_email_with_image(subject, text_content, image_path):
           <pre style="font-size: 14px; font-family: inherit; white-space: pre-wrap;">{text_content}</pre>
         </div>
         <br>
-        <h3>📊 視覺化漲跌圖表：</h3>
-        <img src="cid:chart_image" style="max-width: 100%; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h3>📊 大盤技術走勢 (日 K 線、MA5/MA20 均線與成交量)：</h3>
+        <img src="cid:chart_image" style="max-width: 100%; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
       </body>
     </html>
     """
@@ -295,7 +318,7 @@ def send_email_with_image(subject, text_content, image_path):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
             server.sendmail(sender, receiver, msg.as_string())
-        print("📧 圖文 Email 發送成功！")
+        print("📧 圖文 K 線 Email 發送成功！")
     except Exception as e:
         print(f"❌ Email 發送異常: {e}")
 
@@ -307,14 +330,15 @@ def main():
     
     macro_data = get_us_and_macro_market()
     tw_data = get_tw_market_and_institutional()
-    focus_stocks_text, stock_dict = get_focus_stocks()
+    focus_stocks_text = get_focus_stocks()
     news = get_market_news()
     ptt_data = get_ptt_sentiment()
 
     full_report = f"{title}\n\n{macro_data}\n\n{tw_data}\n\n{focus_stocks_text}\n\n{news}\n\n{ptt_data}"
     print(full_report)
 
-    chart_file = generate_stock_chart(stock_dict)
+    # 產製加權指數 K 線與均線圖
+    chart_file = generate_kline_chart("^TWII")
     
     send_line(full_report)
     send_email_with_image(title, full_report, chart_file)
