@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
 import matplotlib
-matplotlib.use('Agg')  # 無介面雲端伺服器繪圖專用模式
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
@@ -25,7 +25,7 @@ plt.rcParams['font.sans-serif'] = [
 # ----------------- 1. 資料收集與分析模組 -----------------
 
 def get_us_and_macro_market():
-    """美股大盤指數與關鍵總經先行指標 (VIX、美債殖利率、美元指數)"""
+    """美股大盤指數與關鍵總經先行指標"""
     tickers = {
         "標普 500": "^GSPC",
         "那斯達克": "^IXIC",
@@ -56,10 +56,10 @@ def get_us_and_macro_market():
     return "\n".join(report)
 
 def get_tw_market_and_institutional():
-    """台股大盤指數與三大法人買賣超 (證交所 OpenAPI)"""
+    """台股加權指數與三大法人買賣超 (證交所 OpenAPI)"""
     report = ["【台股大盤走勢與籌碼動態】"]
     
-    # 1. 台股加權指數
+    # 台股指數
     try:
         tw_data = yf.download("^TWII", period="5d", progress=False)['Close']
         series = tw_data.dropna()
@@ -74,7 +74,7 @@ def get_tw_market_and_institutional():
     except Exception as e:
         report.append(f"• 台股指數擷取異常: {e}")
 
-    # 2. 三大法人買賣超日報
+    # 三大法人買賣超
     try:
         url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -109,8 +109,45 @@ def get_tw_market_and_institutional():
 
     return "\n".join(report)
 
+def get_sector_performance():
+    """題材族群輪動分析（AI、矽光子、散熱、重電）"""
+    sectors = {
+        "AI 伺服器": ["2382.TW", "3231.TW", "6669.TW"],     # 廣達、緯創、緯穎
+        "矽光子 CPO": ["3450.TW", "4977.TW", "3363.TW"],    # 聯鈞、眾達、上詮
+        "散熱族群": ["3017.TW", "3324.TW", "2421.TW"],      # 奇鋐、雙鴻、建準
+        "重電能源": ["1519.TW", "1513.TW", "1503.TW"]       # 華城、中興電、士電
+    }
+    
+    all_tickers = [ticker for group in sectors.values() for ticker in group]
+    report = ["【盤面焦點概念族群輪動】"]
+    
+    try:
+        data = yf.download(all_tickers, period="5d", progress=False)['Close']
+        sector_scores = {}
+        
+        for sector_name, tickers in sectors.items():
+            pct_list = []
+            for t in tickers:
+                if t in data.columns and len(data[t].dropna()) >= 2:
+                    s = data[t].dropna()
+                    pct = ((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2]) * 100
+                    pct_list.append(pct)
+            if pct_list:
+                avg_pct = sum(pct_list) / len(pct_list)
+                sector_scores[sector_name] = avg_pct
+
+        # 依表現由強至弱排序
+        sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
+        for name, avg_pct in sorted_sectors:
+            sign = "+" if avg_pct > 0 else ""
+            report.append(f"• {name}: 平均 {sign}{avg_pct:.2f}%")
+    except Exception as e:
+        report.append(f"• 族群計算異常: {e}")
+
+    return "\n".join(report)
+
 def get_focus_stocks():
-    """追蹤台股重點個股行情（台積電、鴻海、聯發科）"""
+    """追蹤台股重點權值個股行情"""
     watch_list = {
         "台積電": "2330.TW",
         "鴻海": "2317.TW",
@@ -133,68 +170,68 @@ def get_focus_stocks():
         
     return "\n".join(report)
 
-def get_market_news():
-    """抓取 Yahoo 奇摩股市首頁即時焦點新聞"""
-    report = ["【財經即時頭條與市場焦點】"]
-    url = "https://tw.stock.yahoo.com/news/"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def get_curated_news():
+    """抓取 Yahoo 股市頭條與 PTT 焦點，並以重大關鍵字過濾標記"""
+    keywords = ["營收", "新高", "法說", "擴產", "獲利", "外資", "晶圓", "AI", "停損", "反彈", "重挫", "大漲"]
+    report = ["【精選重大財經焦點與社群熱點】"]
+    
+    selected_news = []
+    
+    # 1. 抓取 Yahoo 新聞
     try:
+        url = "https://tw.stock.yahoo.com/news/"
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-        news_items = soup.select("ul li h3 a")
-        count = 0
-        for item in news_items:
-            title = item.text.strip()
+        for a in soup.select("ul li h3 a"):
+            title = a.text.strip()
             if title:
-                report.append(f"• {title}")
-                count += 1
-            if count >= 5:
-                break
-    except Exception as e:
-        report.append(f"• 新聞數據擷取異常: {e}")
-    return "\n".join(report)
+                # 判定是否包含熱點關鍵字
+                is_hot = any(k in title for k in keywords)
+                prefix = "🔥 [Yahoo] " if is_hot else "• [Yahoo] "
+                selected_news.append((is_hot, f"{prefix}{title}"))
+    except Exception:
+        pass
 
-def get_ptt_sentiment():
-    """抓取 PTT Stock 版熱門焦點標題"""
-    report = ["【社群投資焦點 (PTT Stock)】"]
-    url = "https://www.ptt.cc/bbs/Stock/index.html"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    # 2. 抓取 PTT Stock 版焦點
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        ptt_url = "https://www.ptt.cc/bbs/Stock/index.html"
+        ptt_headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(ptt_url, headers=ptt_headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-        titles = []
         for tag in soup.select("div.r-ent div.title a"):
-            title_text = tag.text.strip()
-            if not title_text.startswith("[公告]"):
-                titles.append(title_text)
-            if len(titles) >= 5:
-                break
-        for t in titles:
-            report.append(f"• {t}")
-    except Exception as e:
-        report.append(f"• PTT 輿情抓取失敗: {e}")
+            t = tag.text.strip()
+            if not t.startswith("[公告]"):
+                is_hot = any(k in t for k in keywords)
+                prefix = "🔥 [PTT] " if is_hot else "• [PTT] "
+                selected_news.append((is_hot, f"{prefix}{t}"))
+    except Exception:
+        pass
+
+    # 排序：優先呈現帶有 🔥 的焦點新聞，取前 6 則
+    selected_news.sort(key=lambda x: x[0], reverse=True)
+    for _, text in selected_news[:6]:
+        report.append(text)
+        
+    if len(report) == 1:
+        report.append("• 暫無即時篩選新聞")
+        
     return "\n".join(report)
 
-# ----------------- 2. K 線圖繪製模組 (mplfinance) -----------------
+# ----------------- 2. K 線圖繪製模組 -----------------
 
 def generate_kline_chart(ticker="^TWII", output_path="stock_chart.png"):
-    """繪製近 30 日 K 線走勢圖（含 MA5、MA20 均線與成交量）"""
+    """繪製台股近 35 日 K 線圖（含 MA5、MA20 均線與成交量）"""
     try:
         df = yf.download(ticker, period="3mo", progress=False)
         if df.empty or len(df) < 10:
-            print("⚠️ 取得之 K 線歷史數據不足")
             return None
 
-        # 針對 yfinance 多重索引欄位防呆處理
-        if isinstance(df.columns, matplotlib.cbook.Bunch if hasattr(matplotlib, 'cbook') else object):
-            pass
         if hasattr(df.columns, 'levels') and len(df.columns.levels) > 1:
             df.columns = df.columns.get_level_values(0)
 
-        # 取最近 35 根 K 棒
         df = df.tail(35)
 
-        # 設定符合台股習慣的配色（紅漲綠跌）
         market_colors = mpf.make_marketcolors(
             up='#eb4d4b',       # 陽線紅色
             down='#2ecc71',     # 陰線綠色
@@ -211,7 +248,6 @@ def generate_kline_chart(ticker="^TWII", output_path="stock_chart.png"):
             }
         )
 
-        # 繪製 K 線、均線（5 日、20 日）與成交量
         mpf.plot(
             df,
             type='candle',
@@ -233,57 +269,39 @@ def generate_kline_chart(ticker="^TWII", output_path="stock_chart.png"):
 # ----------------- 3. 通知推播模組 -----------------
 
 def send_line(message):
-    """透過 LINE API 推送訊息（支援單人 push 與多人 multicast 清單）"""
+    """LINE 推播（支援單人 push 或多人 multicast 清單）"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     raw_user_ids = os.getenv("LINE_USER_ID", "")
-    
     if not token or not raw_user_ids:
-        print("❌ [LINE 錯誤] 未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID")
         return
 
     user_list = [uid.strip() for uid in raw_user_ids.split(",") if uid.strip()]
     if not user_list:
-        print("❌ [LINE 錯誤] LINE_USER_ID 清單為空")
         return
 
     if len(message) > 4000:
         message = message[:4000] + "\n...(篇幅過長已截斷)"
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
-    }
-
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     if len(user_list) == 1:
         url = "https://api.line.me/v2/bot/message/push"
-        payload = {
-            "to": user_list[0],
-            "messages": [{"type": "text", "text": message}]
-        }
+        payload = {"to": user_list[0], "messages": [{"type": "text", "text": message}]}
     else:
         url = "https://api.line.me/v2/bot/message/multicast"
-        payload = {
-            "to": user_list,
-            "messages": [{"type": "text", "text": message}]
-        }
+        payload = {"to": user_list, "messages": [{"type": "text", "text": message}]}
 
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         print(f"📡 [LINE 回應碼]: {res.status_code}")
-        if res.status_code != 200:
-            print(f"❌ [LINE 詳細訊息]: {res.text}")
-        else:
-            print(f"✅ LINE 成功推送給 {len(user_list)} 位好友")
     except Exception as e:
         print(f"❌ [LINE 連線異常]: {e}")
 
 def send_email_with_image(subject, text_content, image_path):
-    """發送內嵌 K 線圖表的 HTML 電子郵件"""
+    """發送內嵌圖表的 HTML 電子郵件"""
     sender = os.getenv("GMAIL_USER")
     password = os.getenv("GMAIL_APP_PASSWORD")
     receiver = os.getenv("RECEIVER_EMAIL", sender)
     if not sender or not password:
-        print("⚠️ 未設定 Gmail 帳號或密碼，跳過 Email 發送")
         return
 
     msg = MIMEMultipart("related")
@@ -318,7 +336,7 @@ def send_email_with_image(subject, text_content, image_path):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender, password)
             server.sendmail(sender, receiver, msg.as_string())
-        print("📧 圖文 K 線 Email 發送成功！")
+        print("📧 圖文 Email 發送成功！")
     except Exception as e:
         print(f"❌ Email 發送異常: {e}")
 
@@ -330,14 +348,14 @@ def main():
     
     macro_data = get_us_and_macro_market()
     tw_data = get_tw_market_and_institutional()
-    focus_stocks_text = get_focus_stocks()
-    news = get_market_news()
-    ptt_data = get_ptt_sentiment()
+    sector_data = get_sector_performance()
+    focus_stocks = get_focus_stocks()
+    curated_news = get_curated_news()
 
-    full_report = f"{title}\n\n{macro_data}\n\n{tw_data}\n\n{focus_stocks_text}\n\n{news}\n\n{ptt_data}"
+    # 組合排版
+    full_report = f"{title}\n\n{macro_data}\n\n{tw_data}\n\n{sector_data}\n\n{focus_stocks}\n\n{curated_news}"
     print(full_report)
 
-    # 產製加權指數 K 線與均線圖
     chart_file = generate_kline_chart("^TWII")
     
     send_line(full_report)
