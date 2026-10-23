@@ -12,9 +12,7 @@ matplotlib.use('Agg')  # 無介面雲端伺服器繪圖專用模式
 import matplotlib.pyplot as plt
 
 # ----------------- 0. 字型與圖表全域設定 -----------------
-# 解決負號無法正常顯示問題
 plt.rcParams['axes.unicode_minus'] = False
-# 設定繁體中文字型優先順序（配合 GitHub Actions 安裝的 fonts-noto-cjk）
 plt.rcParams['font.sans-serif'] = [
     'Noto Sans CJK TC',
     'Noto Sans TC',
@@ -24,6 +22,92 @@ plt.rcParams['font.sans-serif'] = [
 ]
 
 # ----------------- 1. 資料收集與分析模組 -----------------
+
+def get_us_and_macro_market():
+    """美股大盤指數與關鍵總經先行指標 (VIX、美債殖利率、美元指數)"""
+    tickers = {
+        "標普 500": "^GSPC",
+        "那斯達克": "^IXIC",
+        "費城半導體": "^SOX",
+        "道瓊工業": "^DJI",
+        "台積電 ADR": "TSM",
+        "恐慌指數 VIX": "^VIX",
+        "美 10 年債殖利率": "^TNX",
+        "美元指數": "DX-Y.NYB"
+    }
+    report = ["【美股動態與宏觀先行指標】"]
+    try:
+        data = yf.download(list(tickers.values()), period="5d", progress=False)['Close']
+        for name, sym in tickers.items():
+            if sym in data.columns and len(data[sym].dropna()) >= 2:
+                series = data[sym].dropna()
+                latest = series.iloc[-1]
+                prev = series.iloc[-2]
+                pct = ((latest - prev) / prev) * 100
+                sign = "+" if pct > 0 else ""
+                
+                # 特殊單位呈現
+                if "殖利率" in name:
+                    report.append(f"• {name}: {latest:.3f}% ({sign}{pct:.2f}%)")
+                else:
+                    report.append(f"• {name}: {latest:.2f} ({sign}{pct:.2f}%)")
+    except Exception as e:
+        report.append(f"• 美股/總經指標抓取異常: {e}")
+    return "\n".join(report)
+
+def get_tw_market_and_institutional():
+    """台股大盤指數與三大法人買賣超 (證交所 OpenAPI)"""
+    report = ["【台股大盤走勢與籌碼動態】"]
+    
+    # 1. 台股加權指數
+    try:
+        tw_data = yf.download("^TWII", period="5d", progress=False)['Close']
+        series = tw_data.dropna()
+        if len(series) >= 2:
+            latest = series.iloc[-1]
+            prev = series.iloc[-2]
+            pct = ((latest - prev) / prev) * 100
+            sign = "+" if pct > 0 else ""
+            report.append(f"• 加權指數 (^TWII): {latest:.2f} ({sign}{pct:.2f}%)")
+        else:
+            report.append("• 台股大盤數據筆數不足")
+    except Exception as e:
+        report.append(f"• 台股指數擷取異常: {e}")
+
+    # 2. 三大法人買賣超日報
+    try:
+        url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            total_net = 0
+            inst_details = []
+            for item in data:
+                name = item.get("Name", "").strip()
+                diff_str = item.get("Difference", "0").replace(",", "")
+                try:
+                    diff_val = int(diff_str) / 100000000  # 轉為億元
+                    total_net += diff_val
+                    sign = "+" if diff_val > 0 else ""
+                    if "外資" in name:
+                        inst_details.append(f"  - 外資及陸資: {sign}{diff_val:.2f} 億")
+                    elif "投信" in name:
+                        inst_details.append(f"  - 投信: {sign}{diff_val:.2f} 億")
+                    elif "自營商" in name and "避險" not in name:
+                        inst_details.append(f"  - 自營商(自行買賣): {sign}{diff_val:.2f} 億")
+                except ValueError:
+                    continue
+            
+            total_sign = "+" if total_net > 0 else ""
+            report.append(f"• 三大法人合計買賣超: {total_sign}{total_net:.2f} 億")
+            report.extend(inst_details)
+        else:
+            report.append("• 三大法人資料取得失敗 (非開盤日或伺服器回應異常)")
+    except Exception as e:
+        report.append(f"• 三大法人籌碼抓取異常: {e}")
+
+    return "\n".join(report)
 
 def get_focus_stocks():
     """追蹤台股重點個股行情（台積電、鴻海、聯發科）"""
@@ -73,28 +157,25 @@ def get_market_news():
         report.append(f"• 新聞數據擷取異常: {e}")
     return "\n".join(report)
 
-def get_us_and_tw_indices():
-    """大盤指數概況"""
-    tickers = {
-        "加權指數": "^TWII",
-        "標普 500": "^GSPC",
-        "那斯達克": "^IXIC",
-        "費城半導體": "^SOX",
-        "台積電 ADR": "TSM"
-    }
-    report = ["【美股／台股大盤走勢】"]
+def get_ptt_sentiment():
+    """抓取 PTT Stock 版熱門焦點標題"""
+    report = ["【社群投資焦點 (PTT Stock)】"]
+    url = "https://www.ptt.cc/bbs/Stock/index.html"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        data = yf.download(list(tickers.values()), period="5d", progress=False)['Close']
-        for name, sym in tickers.items():
-            if sym in data.columns and len(data[sym].dropna()) >= 2:
-                series = data[sym].dropna()
-                latest = series.iloc[-1]
-                prev = series.iloc[-2]
-                pct = ((latest - prev) / prev) * 100
-                sign = "+" if pct > 0 else ""
-                report.append(f"• {name}: {latest:.2f} ({sign}{pct:.2f}%)")
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        titles = []
+        for tag in soup.select("div.r-ent div.title a"):
+            title_text = tag.text.strip()
+            if not title_text.startswith("[公告]"):
+                titles.append(title_text)
+            if len(titles) >= 5:
+                break
+        for t in titles:
+            report.append(f"• {t}")
     except Exception as e:
-        report.append(f"• 大盤抓取異常: {e}")
+        report.append(f"• PTT 輿情抓取失敗: {e}")
     return "\n".join(report)
 
 # ----------------- 2. 圖表產製模組 -----------------
@@ -106,7 +187,7 @@ def generate_stock_chart(stock_data, output_path="stock_chart.png"):
     
     names = list(stock_data.keys())
     values = list(stock_data.values())
-    colors = ['#eb4d4b' if v >= 0 else '#2ecc71' for v in values]  # 紅漲綠跌
+    colors = ['#eb4d4b' if v >= 0 else '#2ecc71' for v in values]  # 台股紅漲綠跌
 
     plt.figure(figsize=(6, 3.5), dpi=150)
     bars = plt.bar(names, values, color=colors, width=0.45)
@@ -129,7 +210,7 @@ def generate_stock_chart(stock_data, output_path="stock_chart.png"):
 # ----------------- 3. 通知推播模組 -----------------
 
 def send_line(message):
-    """透過 LINE API 推送訊息（自動判定單人 push 或多人 multicast）"""
+    """透過 LINE API 推送訊息（支援單人 push 與多人 multicast 清單）"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     raw_user_ids = os.getenv("LINE_USER_ID", "")
     
@@ -137,7 +218,6 @@ def send_line(message):
         print("❌ [LINE 錯誤] 未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID")
         return
 
-    # 支援使用逗號分隔多位收件者
     user_list = [uid.strip() for uid in raw_user_ids.split(",") if uid.strip()]
     if not user_list:
         print("❌ [LINE 錯誤] LINE_USER_ID 清單為空")
@@ -151,7 +231,6 @@ def send_line(message):
         "Authorization": f"Bearer {token}"
     }
 
-    # 1 個人使用 push API，2 個人以上使用 multicast API
     if len(user_list) == 1:
         url = "https://api.line.me/v2/bot/message/push"
         payload = {
@@ -226,11 +305,13 @@ def main():
     today_str = datetime.now().strftime("%Y-%m-%d")
     title = f"📊 每日晨間投資快報 - {today_str}"
     
-    indices = get_us_and_tw_indices()
+    macro_data = get_us_and_macro_market()
+    tw_data = get_tw_market_and_institutional()
     focus_stocks_text, stock_dict = get_focus_stocks()
     news = get_market_news()
+    ptt_data = get_ptt_sentiment()
 
-    full_report = f"{title}\n\n{indices}\n\n{focus_stocks_text}\n\n{news}"
+    full_report = f"{title}\n\n{macro_data}\n\n{tw_data}\n\n{focus_stocks_text}\n\n{news}\n\n{ptt_data}"
     print(full_report)
 
     chart_file = generate_stock_chart(stock_dict)
