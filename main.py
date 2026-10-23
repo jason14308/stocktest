@@ -12,6 +12,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
+# 匯入自訂開源策略分析模組
+from strategy import run_kevin_strategies
+
 # ----------------- 0. 字型與圖表全域設定 -----------------
 plt.rcParams['axes.unicode_minus'] = False
 plt.rcParams['font.sans-serif'] = [
@@ -38,37 +41,41 @@ def get_us_and_macro_market():
     }
     report = ["【美股動態與宏觀先行指標】"]
     try:
-        data = yf.download(list(tickers.values()), period="5d", progress=False)['Close']
+        data = yf.download(list(tickers.values()), period="5d", progress=False)
+        close_df = data['Close'] if 'Close' in data else data
         for name, sym in tickers.items():
-            if sym in data.columns and len(data[sym].dropna()) >= 2:
-                series = data[sym].dropna()
-                latest = series.iloc[-1]
-                prev = series.iloc[-2]
-                pct = ((latest - prev) / prev) * 100
-                sign = "+" if pct > 0 else ""
-                
-                if "殖利率" in name:
-                    report.append(f"• {name}: {latest:.3f}% ({sign}{pct:.2f}%)")
-                else:
-                    report.append(f"• {name}: {latest:.2f} ({sign}{pct:.2f}%)")
+            if sym in close_df.columns:
+                series = close_df[sym].dropna()
+                if len(series) >= 2:
+                    latest = float(series.iloc[-1])
+                    prev = float(series.iloc[-2])
+                    pct = ((latest - prev) / prev) * 100
+                    sign = "+" if pct > 0 else ""
+                    
+                    if "殖利率" in name:
+                        report.append(f"• {name}: {latest:.3f}% ({sign}{pct:.2f}%)")
+                    else:
+                        report.append(f"• {name}: {latest:.2f} ({sign}{pct:.2f}%)")
     except Exception as e:
         report.append(f"• 美股/總經指標抓取異常: {e}")
     return "\n".join(report)
 
 def get_tw_market_and_institutional():
-    """台股加權指數與三大法人買賣超 (證交所 OpenAPI)"""
+    """台股加權指數與三大法人買賣超 (強化相容性)"""
     report = ["【台股大盤走勢與籌碼動態】"]
-    tw_summary = {"price": "--", "pct_str": "--", "pct_val": 0.0, "inst_net": "--"}
+    tw_summary = {"price": "--", "pct_str": "--", "pct_val": 0.0, "inst_net": "查無數據"}
     
-    # 台股指數
+    # 1. 台股加權指數抓取
     try:
-        tw_data = yf.download("^TWII", period="5d", progress=False)['Close']
-        series = tw_data.dropna()
-        if len(series) >= 2:
-            latest = series.iloc[-1]
-            prev = series.iloc[-2]
+        tw_ticker = yf.Ticker("^TWII")
+        hist = tw_ticker.history(period="10d")
+        if not hist.empty and len(hist) >= 2:
+            closes = hist['Close'].dropna()
+            latest = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
             pct = ((latest - prev) / prev) * 100
             sign = "+" if pct > 0 else ""
+            
             tw_summary["price"] = f"{latest:.2f}"
             tw_summary["pct_str"] = f"{sign}{pct:.2f}%"
             tw_summary["pct_val"] = pct
@@ -78,37 +85,42 @@ def get_tw_market_and_institutional():
     except Exception as e:
         report.append(f"• 台股指數擷取異常: {e}")
 
-    # 三大法人買賣超
+    # 2. 三大法人買賣超日報
     try:
         url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        res = requests.get(url, headers=headers, timeout=12)
         if res.status_code == 200:
             data = res.json()
-            total_net = 0
-            inst_details = []
-            for item in data:
-                name = item.get("Name", "").strip()
-                diff_str = item.get("Difference", "0").replace(",", "")
-                try:
-                    diff_val = int(diff_str) / 100000000  # 轉為億元
-                    total_net += diff_val
-                    sign = "+" if diff_val > 0 else ""
-                    if "外資" in name:
-                        inst_details.append(f"  - 外資及陸資: {sign}{diff_val:.2f} 億")
-                    elif "投信" in name:
-                        inst_details.append(f"  - 投信: {sign}{diff_val:.2f} 億")
-                    elif "自營商" in name and "避險" not in name:
-                        inst_details.append(f"  - 自營商(自行買賣): {sign}{diff_val:.2f} 億")
-                except ValueError:
-                    continue
-            
-            total_sign = "+" if total_net > 0 else ""
-            tw_summary["inst_net"] = f"{total_sign}{total_net:.2f} 億"
-            report.append(f"• 三大法人合計買賣超: {total_sign}{total_net:.2f} 億")
-            report.extend(inst_details)
+            if isinstance(data, list) and len(data) > 0:
+                total_net = 0.0
+                inst_details = []
+                for item in data:
+                    name = item.get("Name", "").strip()
+                    diff_str = str(item.get("Difference", "0")).replace(",", "").strip()
+                    try:
+                        diff_val = float(diff_str) / 100000000.0  # 轉為億元
+                        total_net += diff_val
+                        sign = "+" if diff_val > 0 else ""
+                        if "外資" in name:
+                            inst_details.append(f"  - 外資及陸資: {sign}{diff_val:.2f} 億")
+                        elif "投信" in name:
+                            inst_details.append(f"  - 投信: {sign}{diff_val:.2f} 億")
+                        elif "自營商" in name and "避險" not in name:
+                            inst_details.append(f"  - 自營商: {sign}{diff_val:.2f} 億")
+                    except ValueError:
+                        continue
+                
+                total_sign = "+" if total_net > 0 else ""
+                tw_summary["inst_net"] = f"{total_sign}{total_net:.2f} 億"
+                report.append(f"• 三大法人合計買賣超: {total_sign}{total_net:.2f} 億")
+                report.extend(inst_details)
+            else:
+                report.append("• 三大法人日報暫無最新資料")
         else:
-            report.append("• 三大法人資料取得失敗")
+            report.append(f"• 證交所 API 回應異常 (狀態碼: {res.status_code})")
     except Exception as e:
         report.append(f"• 三大法人籌碼抓取異常: {e}")
 
@@ -127,15 +139,17 @@ def get_sector_performance():
     sorted_sectors = []
     
     try:
-        data = yf.download(all_tickers, period="5d", progress=False)['Close']
+        data = yf.download(all_tickers, period="5d", progress=False)
+        close_df = data['Close'] if 'Close' in data else data
         sector_scores = {}
         for sector_name, tickers in sectors.items():
             pct_list = []
             for t in tickers:
-                if t in data.columns and len(data[t].dropna()) >= 2:
-                    s = data[t].dropna()
-                    pct = ((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2]) * 100
-                    pct_list.append(pct)
+                if t in close_df.columns:
+                    s = close_df[t].dropna()
+                    if len(s) >= 2:
+                        pct = ((float(s.iloc[-1]) - float(s.iloc[-2])) / float(s.iloc[-2])) * 100
+                        pct_list.append(pct)
             if pct_list:
                 sector_scores[sector_name] = sum(pct_list) / len(pct_list)
 
@@ -159,22 +173,24 @@ def get_focus_stocks():
     stocks_summary = []
     try:
         tickers = list(watch_list.values())
-        data = yf.download(tickers, period="5d", progress=False)['Close']
+        data = yf.download(tickers, period="5d", progress=False)
+        close_df = data['Close'] if 'Close' in data else data
         for name, ticker in watch_list.items():
-            if ticker in data.columns and len(data[ticker].dropna()) >= 2:
-                series = data[ticker].dropna()
-                latest = series.iloc[-1]
-                prev = series.iloc[-2]
-                pct = ((latest - prev) / prev) * 100
-                sign = "+" if pct > 0 else ""
-                report.append(f"• {name} ({ticker.split('.')[0]}): {latest:.2f} 元 ({sign}{pct:.2f}%)")
-                stocks_summary.append({
-                    "name": name,
-                    "code": ticker.split('.')[0],
-                    "price": f"{latest:.2f}",
-                    "pct": pct,
-                    "pct_str": f"{sign}{pct:.2f}%"
-                })
+            if ticker in close_df.columns:
+                series = close_df[ticker].dropna()
+                if len(series) >= 2:
+                    latest = float(series.iloc[-1])
+                    prev = float(series.iloc[-2])
+                    pct = ((latest - prev) / prev) * 100
+                    sign = "+" if pct > 0 else ""
+                    report.append(f"• {name} ({ticker.split('.')[0]}): {latest:.2f} 元 ({sign}{pct:.2f}%)")
+                    stocks_summary.append({
+                        "name": name,
+                        "code": ticker.split('.')[0],
+                        "price": f"{latest:.2f}",
+                        "pct": pct,
+                        "pct_str": f"{sign}{pct:.2f}%"
+                    })
     except Exception as e:
         report.append(f"• 個股數據擷取異常: {e}")
         
@@ -264,8 +280,8 @@ def generate_kline_chart(ticker="^TWII", output_path="stock_chart.png"):
 
 # ----------------- 3. LINE Flex Message 卡片產製 -----------------
 
-def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news_summary):
-    """產製結構化美觀的 LINE Flex 卡片 JSON 結構"""
+def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news_summary, picked_stocks):
+    """產製結構化美觀的 LINE Flex 卡片 JSON 結構（加入開源策略選股區塊）"""
     idx_color = "#eb4d4b" if tw_summary["pct_val"] >= 0 else "#2ecc71"
 
     # 1. 焦點個股 row 結構
@@ -282,7 +298,28 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
             ]
         })
 
-    # 2. 概念族群 row 結構
+    # 2. 開源策略精選股 row 結構
+    strategy_rows = []
+    if picked_stocks:
+        for p in picked_stocks:
+            strategy_rows.append({
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                    {"type": "text", "text": f"🎯 {p['code']}", "size": "xs", "weight": "bold", "color": "#2c3e50", "flex": 4},
+                    {"type": "text", "text": f"${p['price']}", "size": "xs", "color": "#555555", "flex": 3},
+                    {"type": "text", "text": p["tag"], "size": "xxs", "color": "#e67e22", "align": "end", "weight": "bold", "flex": 5}
+                ]
+            })
+    else:
+        strategy_rows.append({
+            "type": "text",
+            "text": "• 今日無符合策略濾網標的或非盤後時段",
+            "size": "xxs",
+            "color": "#999999"
+        })
+
+    # 3. 概念族群 row 結構
     sector_rows = []
     for name, avg_pct in sector_summary[:4]:
         c = "#eb4d4b" if avg_pct >= 0 else "#2ecc71"
@@ -296,7 +333,7 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
             ]
         })
 
-    # 3. 頭條新聞列表
+    # 4. 頭條新聞列表
     news_rows = []
     for n in news_summary[:3]:
         clean_n = n.replace("🔥 ", "").replace("• ", "")
@@ -317,20 +354,8 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
             "backgroundColor": "#1e272e",
             "paddingAll": "15px",
             "contents": [
-                {
-                    "type": "text",
-                    "text": "📊 晨間台股速報",
-                    "weight": "bold",
-                    "color": "#00d2d3",
-                    "size": "lg"
-                },
-                {
-                    "type": "text",
-                    "text": f"交易結算日：{today_str}",
-                    "size": "xs",
-                    "color": "#a4b0be",
-                    "margin": "xs"
-                }
+                {"type": "text", "text": "📊 晨間台股速報", "weight": "bold", "color": "#00d2d3", "size": "lg"},
+                {"type": "text", "text": f"報表日期：{today_str}", "size": "xs", "color": "#a4b0be", "margin": "xs"}
             ]
         },
         "body": {
@@ -348,9 +373,17 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
                             "layout": "vertical",
                             "contents": [
                                 {"type": "text", "text": "加權指數", "size": "xs", "color": "#888888"},
-                                {"type": "text", "text": tw_summary["price"], "size": "xl", "weight": "bold", "color": "#222222"}
+                                {
+                                    "type": "box",
+                                    "layout": "baseline",
+                                    "spacing": "sm",
+                                    "contents": [
+                                        {"type": "text", "text": tw_summary["price"], "size": "xl", "weight": "bold", "color": "#222222", "flex": 0},
+                                        {"type": "text", "text": tw_summary["pct_str"], "size": "xs", "weight": "bold", "color": idx_color, "flex": 0}
+                                    ]
+                                }
                             ],
-                            "flex": 5
+                            "flex": 6
                         },
                         {
                             "type": "box",
@@ -359,55 +392,26 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
                                 {"type": "text", "text": "三大法人買賣", "size": "xs", "color": "#888888", "align": "end"},
                                 {"type": "text", "text": tw_summary["inst_net"], "size": "sm", "weight": "bold", "color": "#222222", "align": "end"}
                             ],
-                            "flex": 5
+                            "flex": 4
                         }
                     ]
                 },
                 {"type": "separator"},
-                # 核心個股
-                {
-                    "type": "text",
-                    "text": "📌 核心權值股追蹤",
-                    "weight": "bold",
-                    "size": "xs",
-                    "color": "#2c3e50"
-                },
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "xs",
-                    "contents": stock_rows
-                },
+                # 量化策略精選股（新增區塊）
+                {"type": "text", "text": "💡 量化策略精選 (土洋聯手+月線)", "weight": "bold", "size": "xs", "color": "#2c3e50"},
+                {"type": "box", "layout": "vertical", "spacing": "xs", "contents": strategy_rows},
+                {"type": "separator"},
+                # 核心焦點個股
+                {"type": "text", "text": "📌 核心權值股追蹤", "weight": "bold", "size": "xs", "color": "#2c3e50"},
+                {"type": "box", "layout": "vertical", "spacing": "xs", "contents": stock_rows},
                 {"type": "separator"},
                 # 概念題材輪動
-                {
-                    "type": "text",
-                    "text": "⚡ 盤面焦點族群表現",
-                    "weight": "bold",
-                    "size": "xs",
-                    "color": "#2c3e50"
-                },
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "xs",
-                    "contents": sector_rows
-                },
+                {"type": "text", "text": "⚡ 盤面焦點族群表現", "weight": "bold", "size": "xs", "color": "#2c3e50"},
+                {"type": "box", "layout": "vertical", "spacing": "xs", "contents": sector_rows},
                 {"type": "separator"},
                 # 重點熱門新聞
-                {
-                    "type": "text",
-                    "text": "🔥 重大即時頭條",
-                    "weight": "bold",
-                    "size": "xs",
-                    "color": "#2c3e50"
-                },
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "spacing": "xs",
-                    "contents": news_rows
-                }
+                {"type": "text", "text": "🔥 重大即時頭條", "weight": "bold", "size": "xs", "color": "#2c3e50"},
+                {"type": "box", "layout": "vertical", "spacing": "xs", "contents": news_rows}
             ]
         },
         "footer": {
@@ -433,7 +437,7 @@ def create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news
 # ----------------- 4. 通知推播模組 -----------------
 
 def send_line_flex(flex_content, fallback_text):
-    """發送卡片式 LINE Flex Message（失敗時自動以純文字推播降級相容）"""
+    """發送卡片式 LINE Flex Message（失敗時自動降級純文字）"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     raw_user_ids = os.getenv("LINE_USER_ID", "")
     if not token or not raw_user_ids:
@@ -444,8 +448,6 @@ def send_line_flex(flex_content, fallback_text):
         return
 
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    
-    # 封裝 Flex Message Payload
     flex_message = {
         "type": "flex",
         "altText": "📊 今日台股晨間精選速報",
@@ -464,7 +466,6 @@ def send_line_flex(flex_content, fallback_text):
         print(f"📡 [LINE Flex 回應碼]: {res.status_code}")
         if res.status_code != 200:
             print(f"⚠️ Flex 推送未成功 ({res.text})，切換降級為純文字推播...")
-            # 降級純文字重試
             text_payload = {"messages": [{"type": "text", "text": fallback_text[:4000]}]}
             if len(user_list) == 1:
                 text_payload["to"] = user_list[0]
@@ -526,23 +527,34 @@ def main():
     today_str = datetime.now().strftime("%Y-%m-%d")
     title = f"📊 每日晨間投資快報 - {today_str}"
     
+    # 1. 執行開源量化策略選股
+    picked_stocks = run_kevin_strategies()
+    strategy_report = ["【開源量化策略精選 (土洋聯手+月線)】"]
+    if picked_stocks:
+        for p in picked_stocks:
+            strategy_report.append(f"• 標的代號 {p['code']}: 收盤 ${p['price']} ({p['tag']})")
+    else:
+        strategy_report.append("• 今日無符合策略濾網標的或非盤後時段")
+    strategy_text = "\n".join(strategy_report)
+
+    # 2. 市場資訊收集
     macro_data = get_us_and_macro_market()
     tw_data, tw_summary = get_tw_market_and_institutional()
     sector_data, sector_summary = get_sector_performance()
     focus_stocks_text, stocks_summary = get_focus_stocks()
     curated_news, news_summary = get_curated_news()
 
-    # 純文字報表（備用推播與 Email 內文使用）
-    full_report = f"{title}\n\n{macro_data}\n\n{tw_data}\n\n{sector_data}\n\n{focus_stocks_text}\n\n{curated_news}"
+    # 組合完整純文字報表
+    full_report = f"{title}\n\n{strategy_text}\n\n{macro_data}\n\n{tw_data}\n\n{sector_data}\n\n{focus_stocks_text}\n\n{curated_news}"
     print(full_report)
 
-    # 1. 產製 K 線圖
+    # 3. 繪製 K 線圖
     chart_file = generate_kline_chart("^TWII")
     
-    # 2. 產製 LINE Flex 卡片
-    flex_card = create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news_summary)
+    # 4. 產製 LINE Flex 卡片（包含策略選股結果）
+    flex_card = create_flex_card(today_str, tw_summary, stocks_summary, sector_summary, news_summary, picked_stocks)
 
-    # 3. 發送推播
+    # 5. 推送通知
     send_line_flex(flex_card, full_report)
     send_email_with_image(title, full_report, chart_file)
 
