@@ -53,7 +53,7 @@ def get_focus_stocks():
     return "\n".join(report), stock_data
 
 def get_market_news():
-    """抓取 Yahoo 奇摩股市首頁焦點新聞"""
+    """抓取 Yahoo 奇摩股市首頁即時焦點新聞"""
     report = ["【財經即時頭條與市場焦點】"]
     url = "https://tw.stock.yahoo.com/news/"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -114,7 +114,6 @@ def generate_stock_chart(stock_data, output_path="stock_chart.png"):
     plt.ylabel("漲跌幅 (%)", fontsize=10)
     plt.title("焦點個股日漲跌統計", fontsize=12)
 
-    # 動態設定數值標籤位置，避免與長條柱重疊
     for bar in bars:
         yval = bar.get_height()
         sign = "+" if yval > 0 else ""
@@ -130,18 +129,49 @@ def generate_stock_chart(stock_data, output_path="stock_chart.png"):
 # ----------------- 3. 通知推播模組 -----------------
 
 def send_line(message):
-    """透過 LINE Messaging API 發送文字摘要"""
+    """透過 LINE API 推送訊息（自動判定單人 push 或多人 multicast）"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-    user_id = os.getenv("LINE_USER_ID")
-    if not token or not user_id:
-        print("❌ 未設定 LINE Token 或 User ID")
+    raw_user_ids = os.getenv("LINE_USER_ID", "")
+    
+    if not token or not raw_user_ids:
+        print("❌ [LINE 錯誤] 未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID")
         return
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    payload = {"to": user_id, "messages": [{"type": "text", "text": message[:4000]}]}
+
+    # 支援使用逗號分隔多位收件者
+    user_list = [uid.strip() for uid in raw_user_ids.split(",") if uid.strip()]
+    if not user_list:
+        print("❌ [LINE 錯誤] LINE_USER_ID 清單為空")
+        return
+
+    if len(message) > 4000:
+        message = message[:4000] + "\n...(篇幅過長已截斷)"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    # 1 個人使用 push API，2 個人以上使用 multicast API
+    if len(user_list) == 1:
+        url = "https://api.line.me/v2/bot/message/push"
+        payload = {
+            "to": user_list[0],
+            "messages": [{"type": "text", "text": message}]
+        }
+    else:
+        url = "https://api.line.me/v2/bot/message/multicast"
+        payload = {
+            "to": user_list,
+            "messages": [{"type": "text", "text": message}]
+        }
+
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=10)
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
         print(f"📡 [LINE 回應碼]: {res.status_code}")
+        if res.status_code != 200:
+            print(f"❌ [LINE 詳細訊息]: {res.text}")
+        else:
+            print(f"✅ LINE 成功推送給 {len(user_list)} 位好友")
     except Exception as e:
         print(f"❌ [LINE 連線異常]: {e}")
 
